@@ -29,7 +29,7 @@ setup(
         "retinaface-py==0.0.2",
         "safetensors==0.5.3",
         "sentencepiece==0.2.0",
-        "protobuf==4.25.3",
+        "protobuf",
         "attrs==25.1.0",
         "tqdm==4.66.5",
         "scikit-image==0.25.2",
