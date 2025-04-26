@@ -17,7 +17,8 @@ A PyPI-installable package of NVIDIA's Cosmos Content Safety Guardrails
 
    ```bash
    # From PyPI
-   pip install cosmos-guardrail
+   # pip install cosmos-guardrail
+   pip install git+https://github.com/yiyixuxu/cosmos-guardrail.git
 
    # —or— for local development
    pip install -e .
