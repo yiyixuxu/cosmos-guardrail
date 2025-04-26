@@ -3,6 +3,12 @@
 A PyPI-installable package of NVIDIA's Cosmos Content Safety Guardrails  
 (Checking text and blurring faces in video for unsafe content).
 
+the code is copy & pasted from NVIDIA's Cosmos projects:
+
+- https://github.com/nvidia-cosmos/cosmos-transfer1  
+
+All credit & copyright belong to NVIDIA
+
 ## Installation
 
 1. Create and activate a virtual environment:
@@ -48,11 +54,3 @@ checked_video = safety_checker.check_video_safety(video_input)
 print("Video shape:", checked_video.shape if checked_video is not None else None)
 ```
 
-
-## Credits
-
-This package re-uses and lightly modifies code from NVIDIA's Cosmos projects:
-
-- https://github.com/nvidia-cosmos/cosmos-transfer1  
-
-All credit & copyright belong to NVIDIA (Apache-2.0).
