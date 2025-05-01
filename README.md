@@ -23,7 +23,9 @@ All credit & copyright belong to NVIDIA
 
    ```bash
    # From PyPI
-   # pip install cosmos-guardrail (not yet in pypi, will publish later)
+   pip install cosmos-guardrail
+
+   # From source
    pip install git+https://github.com/yiyixuxu/cosmos-guardrail.git
 
    # —or— for local development
