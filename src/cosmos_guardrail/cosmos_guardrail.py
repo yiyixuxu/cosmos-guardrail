@@ -148,7 +148,8 @@ class VideoSafetyModel(torch.nn.Module):
 
     @torch.inference_mode()
     def forward(self, data_batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        logits = self.network(data_batch["data"].cuda())
+        device = next(self.parameters()).device
+        logits = self.network(data_batch["data"].to(device))
         return {"logits": logits}
 
 
@@ -179,83 +180,73 @@ class SigLIPEncoder(torch.nn.Module):
         return image_features
 
 
-class Aegis(torch.nn.Module, ContentSafetyGuardrail):
+class LlamaGuard3(torch.nn.Module, ContentSafetyGuardrail):
     def __init__(
         self,
         checkpoint_id: str = COSMOS_GUARDRAIL_CHECKPOINT,
-        base_model_id: str = "meta-llama/LlamaGuard-7b",
-        aegis_adapter: str = "nvidia/Aegis-AI-Content-Safety-LlamaGuard-Defensive-1.0",
+        base_model_id: str = "meta-llama/Llama-Guard-3-8B",
     ) -> None:
         super().__init__()
 
         checkpoint_dir = snapshot_download(checkpoint_id)
-        checkpoint_dir = (pathlib.Path(checkpoint_dir) / "aegis").as_posix()
+        checkpoint_dir = (pathlib.Path(checkpoint_dir) / "llamaguard3").as_posix()
 
         self.checkpoint_dir = checkpoint_dir
         self.dtype = torch.bfloat16
-        base_model = AutoModelForCausalLM.from_pretrained(base_model_id, cache_dir=self.checkpoint_dir)
 
+        self.model = AutoModelForCausalLM.from_pretrained(base_model_id, cache_dir=self.checkpoint_dir)
         self.tokenizer = AutoTokenizer.from_pretrained(base_model_id, cache_dir=self.checkpoint_dir)
-        self.model = PeftModel.from_pretrained(base_model, aegis_adapter, cache_dir=self.checkpoint_dir)
 
-    def get_moderation_prompt(self, user_prompt: str) -> str:
-        """Create the moderation prompt for the Aegis model."""
-        full_prompt = f"""[INST] Task: Check if there is unsafe content in 'User' messages in conversations according our safety policy with the
-below categories.
-
-        <BEGIN UNSAFE CONTENT CATEGORIES> {"".join([f"{category['instruction']}" for category in UNSAFE_CATEGORIES])}
-        <END UNSAFE CONTENT CATEGORIES>
-
-        <BEGIN CONVERSATION>
-
-        """
-        full_prompt += f"User: {user_prompt}\n\n"
-        full_prompt += """<END CONVERSATION>
-
-        Provide your safety assessment for User in the above conversation:
-        - First line must read 'safe' or 'unsafe'.
-        - If unsafe, a second line must include a comma-separated list of violated categories. [/INST]"""
-
-        return full_prompt
-
-    def get_aegis_block_message(self, moderation_output: str) -> str:
-        """Extract the blocked category and reason from the Aegis model output."""
-        block_msg = "Prompt blocked by Aegis."
+    def get_llamaGuard3_block_message(self, moderation_output: str) -> str:
+        """Extract the blocked category from the Llama Guard 3 model output."""
+        block_msg = "Prompt blocked by Llama Guard 3."
         try:
-            # Extract blocked category and reason
-            if len(moderation_output.split("\n")) >= 2:
-                moderation_output_list = moderation_output.split("\n")
-                blocked_category = int(moderation_output_list[1].lstrip("O")) - 1
-                if 0 <= blocked_category < len(UNSAFE_CATEGORIES):
-                    blocked_reason = UNSAFE_CATEGORIES[blocked_category]["blocked_reason"]
-                    blocked_category_name = UNSAFE_CATEGORIES[blocked_category]["category"]
-                    block_msg = f"{blocked_category_name}: {blocked_reason}"
+            lines = moderation_output.splitlines()
+            categories_detected = []
+            for line in lines[1:]:
+                line_stripped = line.split("<|eot_id|>")[0].strip()
+                for category in line_stripped.split(","):
+                    category = category.strip()
+                    if category not in UNSAFE_CATEGORIES:
+                        logger.warning(f"Unrecognized category from moderation output: {category}")
+                    else:
+                        categories_detected.append(category)
+            if len(categories_detected) > 0:
+                blocked_catagories = ", ".join([UNSAFE_CATEGORIES[category][:-1] for category in categories_detected])
+                block_msg = f"{block_msg} Violations: {blocked_catagories}."
         except Exception as e:
-            logger.warning(f"Unable to extract blocked category and reason from Aegis output: {e}")
+            logger.warning(f"Unable to extract blocked category from Llama Guard 3 output: {e}")
         return block_msg
 
-    def filter_aegis_output(self, prompt: str) -> tuple[bool, str]:
-        """Filter the Aegis model output and return the safety status and message."""
-        full_prompt = self.get_moderation_prompt(prompt)
+    def filter_llamaGuard3_output(self, prompt: str) -> tuple[bool, str]:
+        """Filter the Llama Guard 3 model output and return the safety status and message."""
+        conversation = [{"role": "user", "content": prompt}]
         device = next(self.model.parameters()).device
-        inputs = self.tokenizer([full_prompt], add_special_tokens=False, return_tensors="pt").to(device)
-        output = self.model.generate(**inputs, max_new_tokens=100, pad_token_id=self.tokenizer.eos_token_id)
-        prompt_len = inputs["input_ids"].shape[-1]
-        moderation_output = self.tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
-
+        input_ids = self.tokenizer.apply_chat_template(
+            conversation, categories=UNSAFE_CATEGORIES, return_tensors="pt"
+        ).to(device)
+        prompt_len = input_ids.shape[1]
+        output = self.model.generate(
+            input_ids=input_ids,
+            max_new_tokens=100,
+            return_dict_in_generate=True,
+            pad_token_id=0,
+        )
+        generated_tokens = output.sequences[:, prompt_len:]
+        moderation_output = self.tokenizer.decode(generated_tokens[0], skip_special_tokens=False).strip()
         if "unsafe" in moderation_output.lower():
-            block_msg = self.get_aegis_block_message(moderation_output)
+            block_msg = self.get_llamaGuard3_block_message(moderation_output)
             return False, block_msg
         else:
             return True, ""
 
     def is_safe(self, prompt: str) -> tuple[bool, str]:
-        """Check if the input prompt is safe according to the Aegis model."""
+        """Check if the input prompt is safe according to the Llama Guard 3 model."""
         try:
-            return self.filter_aegis_output(prompt)
+            return self.filter_llamaGuard3_output(prompt)
         except Exception as e:
-            logger.error(f"Unexpected error occurred when running Aegis guardrail: {e}")
-            return True, "Unexpected error occurred when running Aegis guardrail."
+            log.error(f"Unexpected error occurred when running Llama Guard 3 guardrail: {e}")
+            return True, "Unexpected error occurred when running Llama Guard 3 guardrail."
 
 
 class Blocklist(ContentSafetyGuardrail):
@@ -692,15 +683,14 @@ class CosmosSafetyChecker(torch.nn.Module):
     def __init__(
         self,
         checkpoint_id: str = COSMOS_GUARDRAIL_CHECKPOINT,
-        aegis_model_id: str = "meta-llama/LlamaGuard-7b",
-        aegis_adapter_id: str = "nvidia/Aegis-AI-Content-Safety-LlamaGuard-Defensive-1.0",
+        llamaguard_model_id: str = "meta-llama/Llama-Guard-3-8B",
     ) -> None:
         super().__init__()
 
         self.text_guardrail = GuardrailRunner(
             safety_models=[
                 Blocklist(checkpoint_id),
-                Aegis(checkpoint_id, aegis_model_id, aegis_adapter_id),
+                LlamaGuard3(checkpoint_id, llamaguard_model_id),
             ]
         )
         self.video_guardrail = GuardrailRunner(
