@@ -245,7 +245,7 @@ class LlamaGuard3(torch.nn.Module, ContentSafetyGuardrail):
         try:
             return self.filter_llamaGuard3_output(prompt)
         except Exception as e:
-            log.error(f"Unexpected error occurred when running Llama Guard 3 guardrail: {e}")
+            logger.error(f"Unexpected error occurred when running Llama Guard 3 guardrail: {e}")
             return True, "Unexpected error occurred when running Llama Guard 3 guardrail."
 
 
